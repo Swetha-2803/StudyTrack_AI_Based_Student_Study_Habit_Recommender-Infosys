@@ -1,0 +1,1156 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import sqlite3
+from datetime import datetime
+from io import BytesIO
+from docx import Document
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.linear_model import LogisticRegression
+from graphviz import Digraph
+
+
+# ---------------- AUTH FUNCTIONS ----------------
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+# Initialize session state
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+
+# ================= PAGE CONFIG =================
+st.set_page_config(
+    page_title="Student Study Habit Recommender",
+    page_icon="🎓",
+    layout="wide"
+)
+
+# ================= GLOBAL CSS (UI ONLY) =================
+st.markdown("""
+<style>
+
+/* ===== BACKGROUND ===== */
+body {
+    background: radial-gradient(circle at top, #0f172a, #020617);
+    color: #e5e7eb;
+}
+
+/* subtle star / glitter */
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image:
+        radial-gradient(#60a5fa 0.7px, transparent 0.7px),
+        radial-gradient(#38bdf8 0.5px, transparent 0.5px);
+    background-size: 140px 140px, 200px 200px;
+    opacity: 0.08;
+    z-index: -1;
+}
+
+/* sidebar */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #020617, #020617);
+}
+
+/* hero */
+.hero {
+    background: linear-gradient(
+        rgba(15,23,42,0.85),
+        rgba(15,23,42,0.85)
+    ),
+    url("https://images.unsplash.com/photo-1524995997946-a1c2e315a42f");
+    background-size: cover;
+    background-position: center;
+    border-radius: 22px;
+    padding: 90px 30px;
+    text-align: center;
+    box-shadow: 0 0 45px rgba(96,165,250,0.35);
+    margin-bottom: 45px;
+}
+.hero h1 {
+    font-size: 52px;
+    font-weight: 900;
+    color: #e0f2fe;
+}
+.hero p {
+    font-size: 18px;
+    color: #93c5fd;
+}
+
+/* cards */
+.card {
+    background: rgba(255,255,255,0.05);
+    padding: 26px;
+    border-radius: 18px;
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 0 18px rgba(96,165,250,0.25);
+    transition: all 0.3s ease;
+}
+.card:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 0 30px rgba(96,165,250,0.45);
+}
+
+/* feature grid */
+.feature-row {
+    display: flex;
+    gap: 20px;
+    margin-top: 35px;
+}
+.feature {
+    flex: 1;
+    background: rgba(255,255,255,0.05);
+    padding: 22px;
+    border-radius: 16px;
+    text-align: center;
+    box-shadow: 0 0 14px rgba(56,189,248,0.25);
+    transition: all 0.3s ease;
+}
+.feature:hover {
+    transform: translateY(-5px);
+}
+.feature h4 {
+    color: #7dd3fc;
+}
+.feature p {
+    font-size: 14px;
+    color: #cbd5f5;
+}
+
+/* metrics */
+.metric {
+    font-size: 34px;
+    font-weight: 900;
+    color: #7dd3fc;
+}
+.metric-label {
+    font-size: 14px;
+    color: #cbd5f5;
+}
+
+/* chatbot */
+.chat-box {
+    background: rgba(255,255,255,0.05);
+    padding: 22px;
+    border-radius: 18px;
+    box-shadow: 0 0 20px rgba(56,189,248,0.3);
+}
+
+</style>
+""", unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    .chart-card {
+        background: rgba(255,255,255,0.05);
+        padding: 22px;
+        margin-top: 25px;
+        border-radius: 18px;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 0 18px rgba(56,189,248,0.25);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# ================= DATABASE (UNCHANGED) =================
+def get_connection():
+    return sqlite3.connect("students.db", check_same_thread=False)
+
+def create_table():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            study REAL,
+            sleep REAL,
+            screen REAL,
+            attendance INTEGER,
+            marks INTEGER,
+            score INTEGER,
+            risk TEXT,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+create_table()
+
+# =========================================================
+# 👉 user account functions (STILL in the same block)
+# =========================================================
+def create_user_table():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+create_user_table()
+
+def add_user(username, password):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO users (username, password) VALUES (?, ?)",
+        (username, hash_password(password))
+    )
+    conn.commit()
+    conn.close()
+
+
+   
+def verify_user(username, password):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT password FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    return row and row[0] == hash_password(password)
+    
+def fetch_students():
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM students ORDER BY id DESC", conn)
+    conn.close()
+    return df
+
+# === USERNAME CHECK FUNCTION (ADD THIS) ===
+def username_exists(username):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+# ================= NAVIGATION WITH SESSION STATE =================
+
+# Default page on first run
+if "page" not in st.session_state:
+    st.session_state["page"] = "🔐 Login"
+
+page = st.sidebar.radio(
+    "Go to",
+    ["🔐 Login", "🏠 Home", "🧾 Student Input", "📊 Latest Analysis",
+     "🚀 Support & Chat", "📂 Student Records", "🗺 Roadmap"],
+    index=["🔐 Login", "🏠 Home", "🧾 Student Input", "📊 Latest Analysis",
+           "🚀 Support & Chat", "📂 Student Records", "🗺 Roadmap"]
+           .index(st.session_state["page"])
+)
+
+# ---- ACCESS GUARD ----
+protected_pages = ["🏠 Home", "🧾 Student Input", "📊 Latest Analysis",
+                   "🚀 Support & Chat", "📂 Student Records", "🗺 Roadmap"]
+
+if not st.session_state.authenticated and page in protected_pages:
+    st.session_state["page"] = "🔐 Login"
+    page = "🔐 Login"
+
+
+# Sync selection
+st.session_state["page"] = page
+
+
+def insert_student(data):
+    score = (
+        data["study"] * 10 +
+        data["sleep"] * 8 +
+        data["attendance"] * 0.3 +
+        data["marks"] * 0.4 -
+        data["screen"] * 5
+    )
+    score = int(max(0, min(100, score)))
+    risk = "Low Risk" if score >= 75 else "Medium Risk" if score >= 50 else "High Risk"
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO students
+        (name, study, sleep, screen, attendance, marks, score, risk, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        data["name"], data["study"], data["sleep"], data["screen"],
+        data["attendance"], data["marks"], score, risk,
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    ))
+    conn.commit()
+    conn.close()
+
+# ===== USER LIST & PASSWORD HASH FUNCTION =====
+import hashlib
+
+# ===== Initialize login state =====
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+# ========== LOGIN PAGE ==========
+if page == "🔐 Login":
+
+    st.markdown("""
+        <h1 style="
+            text-align:center;
+            color:#7dd3fc;
+            font-weight:900;
+            text-shadow:0px 0px 8px rgba(125,211,252,0.8);
+        ">
+        🔐 Welcome Back
+        </h1>
+        <p style="text-align:center;color:#cbd5f5;margin-bottom:30px;">
+            Access your personalized student Recommender dashboard
+        </p>
+    """, unsafe_allow_html=True)
+
+    # Initialize mode
+    if "login_mode" not in st.session_state:
+        st.session_state.login_mode = "login"
+
+
+    # Toggle buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔑 Login", use_container_width=True):
+            st.session_state.login_mode = "login"
+    with col2:
+        if st.button("🆕 Create Account", use_container_width=True):
+            st.session_state.login_mode = "register"
+
+    # ---------- REGISTER ----------
+    if st.session_state.login_mode == "register":
+        st.subheader("🆕 Create Account")
+
+        with st.form("register_form"):
+            new_user = st.text_input("New Username")
+            new_pass = st.text_input("New Password", type="password")
+            reg_btn = st.form_submit_button("Create Account")
+
+        if reg_btn:
+            if new_user.strip() == "" or new_pass.strip() == "":
+                st.error("⚠ Fill all fields")
+
+            elif username_exists(new_user):
+                st.error("❌ Username already exists")
+
+            else:
+                add_user(new_user, new_pass)
+                st.success("✅ Account created! Please login.")
+                st.session_state.login_mode = "login"
+                st.rerun()
+
+    # ---------- LOGIN ----------
+    if st.session_state.login_mode == "login":
+        st.subheader("🔑 Login")
+
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            login_btn = st.form_submit_button("Login")
+
+        if login_btn:
+            if verify_user(username, password):
+                st.session_state.authenticated = True
+                st.session_state.username = username
+                st.session_state["page"] = "🏠 Home"
+                st.success("Login successful! Redirecting...")
+                st.rerun()
+            else:
+                st.error("❌ Wrong username or password")
+
+    # 🚨 VERY IMPORTANT — stops rest of dashboard from rendering
+    st.stop()
+
+
+# ===== LOGOUT BUTTON =====
+if st.session_state.authenticated:
+    with st.sidebar:
+        st.markdown(f"### 👋 Welcome, **{st.session_state.username}**")
+        if st.button("🚪 Logout"):
+            st.session_state.authenticated = False
+            st.session_state.username = ""
+            st.success("Logout successful!")
+            st.rerun()
+
+# ================= HOME =================
+if page == "🏠 Home":
+    st.markdown("""
+    <div class="hero">
+        <h1>Student Study Habit Recommended Dashboard</h1>
+        <p>AI-assisted dashboard for smarter academic decisions</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("""
+        <div class="card">
+                    <img src="https://cdn-icons-png.flaticon.com/512/3135/3135755.png"
+                 style="width:80px; display:block; margin-left:auto; margin-right:auto;">
+            <h3>🎯 Why this Website?</h3>
+                                <p>
+        This website is designed to help students understand how their daily
+        study habits affect academic performance.
+        Many students face difficulties due to irregular study routines,
+        poor sleep schedules, and excessive screen time.
+        This platform collects such habit data in a structured manner
+        and analyzes it using logical scoring methods.
+        It identifies potential academic risks at an early stage,
+        allowing students to take corrective action on time.
+        The system also provides clear improvement guidance
+        to help students build discipline and consistency in learning.
+        Overall, the website supports students in making informed academic decisions.
+        It acts as a self-monitoring tool to track progress and improve performance.
+        </p>
+
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown("""
+        <div class="card">
+                                <img src="https://cdn-icons-png.flaticon.com/512/9512/9512621.png"
+                 style="width:80px; display:block; margin-left:auto; margin-right:auto; margin-bottom:15px;">
+            <h3>⚙️ How it Works</h3>
+                <ul>
+            <li>Students enter their daily study and lifestyle habits into the system.</li>
+            <li>The system records inputs such as study hours, sleep time, and screen usage.</li>
+            <li>Attendance percentage and academic marks are also collected.</li>
+            <li>A logic-based scoring algorithm evaluates the collected data.</li>
+            <li>An overall performance score is calculated for each student.</li>
+            <li>Based on the score, the academic risk level is identified.</li>
+            <li>Visual charts are generated to show habit-wise performance.</li>
+            <li>Personalized improvement suggestions are provided to the student.</li>
+        </ul>
+
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="feature-row">
+        <div class="feature"> <img src="https://cdn-icons-png.flaticon.com/512/159/159469.png"
+             style="width:60px; margin-bottom:10px;"><h4>📊 Smart Analysis</h4><p>Automatic habit evaluation</p></div>
+        <div class="feature">  <img src="https://cdn-icons-png.flaticon.com/512/564/564619.png"
+             style="width:60px; margin-bottom:10px;"><h4>⚠️ Risk Prediction</h4><p>Early academic warning</p></div>
+        <div class="feature"><img src="https://cdn-icons-png.flaticon.com/512/337/337946.png"
+             style="width:60px; margin-bottom:10px;"><h4>📁 Reports</h4><p>Centralized student records</p></div>
+        <div class="feature"><img src="https://cdn-icons-png.flaticon.com/512/8678/8678184.png"
+             style="width:60px; margin-bottom:10px;"><h4>🚀 Improvement</h4><p>Actionable guidance</p></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 🔹 SPACE BETWEEN BAR AND VISION/MISSION
+    st.markdown("<div style='height:35px'></div>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="card">
+                <img src="https://cdn-icons-png.flaticon.com/512/7588/7588515.png"
+         style="width:80px; margin-bottom:15px;">
+        <h3>🎯 Vision</h3>
+        <p>
+        To empower students with awareness of their study habits
+        and help them take corrective action before academic failure.
+        </p>
+    </div>
+<br>
+    <div class="card">
+                <img src="https://cdn-icons-png.flaticon.com/512/6345/6345906.png"
+         style="width:80px; margin-bottom:15px;">
+        <h3>🚀 Mission</h3>
+        <p>
+        To provide a structured, data-driven academic support system
+        that analyzes habits, identifies risks early, and delivers
+        actionable guidance for continuous improvement.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+# ================= STUDENT INPUT =================
+if page != "🔐 Login" and not st.session_state.authenticated:
+    st.warning("Please login to access the dashboard ❗")
+    st.stop()
+
+elif page == "🧾 Student Input":
+    st.subheader("🧾 Student Input")
+
+    with st.form("student_form"):
+        name = st.text_input("Student Name")
+        study = st.slider("Study Hours", 0.0, 10.0, 2.0)
+        sleep = st.slider("Sleep Hours", 0.0, 10.0, 6.0)
+        screen = st.slider("Screen Time", 0.0, 10.0, 4.0)
+        attendance = st.slider("Attendance (%)", 0, 100, 75)
+        marks = st.slider("Marks (%)", 0, 100, 50)
+        submit = st.form_submit_button("Analyze & Save")
+
+    if submit and name:
+        insert_student({
+            "name": name,
+            "study": study,
+            "sleep": sleep,
+            "screen": screen,
+            "attendance": attendance,
+            "marks": marks
+        })
+        st.success("Student data saved successfully")
+
+        # ===== ADDED: SAME PAGE ANALYSIS + DOWNLOAD =====
+        score = (
+            study * 10 +
+            sleep * 8 +
+            attendance * 0.3 +
+            marks * 0.4 -
+            screen * 5
+        )
+        score = int(max(0, min(100, score)))
+        risk = "Low Risk" if score >= 75 else "Medium Risk" if score >= 50 else "High Risk"
+
+        st.markdown("### 📊 Latest Analysis")
+        st.metric("Score", score)
+        st.metric("Risk Level", risk)
+
+        report_df = pd.DataFrame([{
+            "name": name,
+            "study": study,
+            "sleep": sleep,
+            "screen": screen,
+            "attendance": attendance,
+            "marks": marks,
+            "score": score,
+            "risk": risk
+        }])
+
+        st.download_button(
+            "Download CSV",
+            report_df.to_csv(index=False),
+            "student_report.csv"
+        )
+
+        excel_buffer = BytesIO()
+        report_df.to_excel(excel_buffer, index=False)
+        st.download_button(
+            "Download Excel",
+            excel_buffer.getvalue(),
+            "student_report.xlsx"
+        )
+
+        doc = Document()
+        doc.add_heading("Student Study Habit Report")
+        for k, v in report_df.iloc[0].items():
+            doc.add_paragraph(f"{k}: {v}")
+        word_buffer = BytesIO()
+        doc.save(word_buffer)
+        st.download_button(
+            "Download Word",
+            word_buffer.getvalue(),
+            "student_report.docx"
+        )
+
+    # ===== ADDED: CSV UPLOAD =====
+    st.markdown("### 📂 Upload Student Data (CSV)")
+    csv_file = st.file_uploader("Upload CSV file", type=["csv"])
+    if csv_file:
+        csv_df = pd.read_csv(csv_file)
+        st.dataframe(csv_df, use_container_width=True)
+
+# ================= ANALYSIS =================
+# ================= ANALYSIS =================
+if page != "🔐 Login" and not st.session_state.authenticated:
+    st.warning("Please login to access the dashboard ❗")
+    st.stop()
+
+elif page == "📊 Latest Analysis":
+    df = fetch_students()
+    if df.empty:
+        st.info("No data available")
+    else:
+        latest = df.iloc[0:1]
+        latest_name = latest["name"].values[0]
+
+        st.markdown(f"## 📌 Latest Analysis — {latest_name}")
+
+        features = ["study", "sleep", "screen", "attendance", "marks"]
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(df[features])
+
+        # -------- CLUSTER --------
+        kmeans = KMeans(n_clusters=3, random_state=42)
+        df["Cluster"] = kmeans.fit_predict(X_scaled)
+        df["Cluster_Label"] = df["Cluster"].map({
+            0:"High Performers",1:"Medium Performers",2:"Low Performers"
+        })
+        st.metric("Cluster Group", df.loc[0,"Cluster_Label"])
+
+        # -------- PREDICTION --------
+        lr = LogisticRegression()
+        try:
+            y = LabelEncoder().fit_transform(df["risk"])
+            lr.fit(df[features], y)
+            df["Predicted_Risk"] = lr.predict(df[features])
+            df["Predicted_Risk"] = df["Predicted_Risk"].map({
+                0:"High Risk",1:"Low Risk",2:"Medium Risk"
+            })
+            st.metric("Predicted Risk", df.loc[0,"Predicted_Risk"])
+        except:
+            df["Predicted_Risk"] = "Not enough data"
+            st.warning("⚠ Need risk variation for ML prediction")
+
+        # -------- DETAILS TABLE --------
+        st.markdown("### 🧾 Latest Student Details")
+        st.dataframe(df.iloc[0:1], use_container_width=True)
+
+        latest_vals = latest[features].iloc[0]
+
+        # ====== BAR ======
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 📊 Habit Breakdown (Bar)")
+        fig = px.bar(latest_vals, title=f"Study Habit Breakdown — {latest_name}")
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ====== PIE ======
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 🥧 Habit Contribution (Pie)")
+        scaled = latest_vals / latest_vals.sum()
+        fig = px.pie(names=scaled.index, values=scaled.values,
+                     title=f"Habit Contribution Pie — {latest_name}")
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ====== CLUSTER POSITION ======
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 🎯 Cluster Position of Latest Student")
+        fig = px.scatter(df, x="study", y="marks", color="score",
+                         color_continuous_scale="Turbo",
+                         hover_data=["name","risk","score"])
+        fig.add_scatter(
+            x=[latest_vals["study"]], y=[latest_vals["marks"]],
+            mode="markers",
+            marker=dict(size=20, color="white", line=dict(width=4, color="cyan")),
+            name="Latest Student"
+        )
+        fig.update_layout(coloraxis_colorbar_title="Score")
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ====== RADAR ======
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 🧭 Habit Radar")
+        fig = px.line_polar(latest_vals, r=latest_vals.values,
+                            theta=latest_vals.index, line_close=True)
+        fig.update_traces(fill='toself')
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ====== TREND ======
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 📈 Score Trend for This Student")
+        df['created_at'] = pd.to_datetime(df['created_at'])
+        hist = df[df['name']==latest_name].sort_values("created_at")
+        fig = px.line(hist, x="created_at", y="score",
+                      markers=True, text="score")
+        fig.update_traces(textposition="top center")
+        fig.update_layout(yaxis_range=[0,100])
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+            # ======== PERSONALIZED SUGGESTIONS ========
+    st.markdown("### 🧠 Personalized Suggestions")
+
+    suggestions = []
+
+    # ---- Study Hours ----
+    if latest_vals["study"] < 3:
+        suggestions.append("• Increase focused study time by +1.5 hours/day")
+    elif latest_vals["study"] < 5:
+        suggestions.append("• Maintain consistent study, target +45 mins/day")
+
+    # ---- Sleep Hours ----
+    if latest_vals["sleep"] < 6:
+        suggestions.append("• Fix sleep routine → minimum 7 hours/night for better memory")
+    elif latest_vals["sleep"] > 9:
+        suggestions.append("• Reduce oversleeping, maintain 7–8 hours")
+
+    # ---- Screen Time ----
+    if latest_vals["screen"] > 6:
+        suggestions.append("• Reduce screen usage by −1.5 hours/day to improve focus")
+    elif latest_vals["screen"] > 4:
+        suggestions.append("• Reduce screen usage by −45 mins/day")
+
+    # ---- Attendance ----
+    if latest_vals["attendance"] < 75:
+        suggestions.append("• Increase class attendance → missing classes lowers understanding")
+
+    # ---- Marks ----
+    if latest_vals["marks"] < 60:
+        suggestions.append("• Practice previous question papers to improve marks")
+
+    # ---- IF NO SUGGESTIONS ----
+    if not suggestions:
+        suggestions.append("• Habits are stable — keep consistency and revise weekly")
+
+    # ---- DISPLAY ----
+    for s in suggestions:
+        st.warning(s)
+
+
+# ================= SUPPORT: IMPROVEMENT + CHATBOT =================
+if page != "🔐 Login" and not st.session_state.authenticated:
+    st.warning("Please login to access the dashboard ❗")
+    st.stop()
+
+elif page == "🚀 Support & Chat":
+
+    # ---- SAFE DEFAULT TAB ----
+    if "support_tab" not in st.session_state:
+        st.session_state["support_tab"] = "improve"
+
+    # ---- PAGE TITLE ----
+    st.markdown("""
+    <h1 style='text-align:center;font-weight:900;color:#38bdf8;
+    text-shadow:0px 0px 15px rgba(56,189,248,0.8);margin-bottom:25px;'>
+        🚀 Academic Support Center
+    </h1>
+    """, unsafe_allow_html=True)
+
+    # ---- STYLES ----
+    st.markdown("""
+    <style>
+    .improve-card {
+        background: linear-gradient(135deg, rgba(14,165,233,0.15), rgba(2,132,199,0.35));
+        padding: 22px; border-radius: 18px;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 0 25px rgba(14,165,233,0.35);
+        margin-bottom: 20px;
+    }
+    .chat-container {
+        max-height: 350px;
+        overflow-y: auto;
+        margin-top: 12px;
+        padding-right:8px;
+    }
+    .chat-user {
+        background: rgba(56,189,248,0.25);
+        color:#e2e8f0; padding: 10px 14px;
+        border-radius: 14px; margin: 6px 0;
+        max-width: 75%; margin-left: auto;
+        border:1px solid rgba(56,189,248,0.45);
+    }
+    .chat-bot {
+        background: rgba(30,41,59,0.6);
+        color:#7dd3fc; padding: 10px 14px;
+        border-radius: 14px; margin: 6px 0;
+        max-width: 75%; margin-right: auto;
+        border-left:4px solid #38bdf8;
+        border:1px solid rgba(255,255,255,0.1);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ---- TAB BUTTONS ----
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("🎯 Improvement Plan", use_container_width=True):
+            st.session_state["support_tab"] = "improve"
+    with colB:
+        if st.button("🤖 Project Chatbot", use_container_width=True):
+            st.session_state["support_tab"] = "chat"
+
+
+    # ======================================================
+    # 📌 IMPROVEMENT SECTION
+    # ======================================================
+    if st.session_state["support_tab"] == "improve":
+        df = fetch_students()
+        if df.empty:
+            st.info("No data available.")
+        else:
+            student = df.iloc[0]
+
+            st.markdown(f"""
+            <div class='improve-card'>
+                <h2 style='color:#7dd3fc;font-weight:900;'>
+                    📌 Personalized Plan — {student['name']}
+                </h2>
+                <p style='color:#bae6fd'>Guided improvement plan based on your current habits.</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # ---- METRICS ----
+            cols = st.columns(3)
+            cols[0].metric("🎯 Score", student["score"])
+            cols[1].metric("⚠ Risk", student["risk"])
+            cols[2].metric("📆 Attendance", f"{student['attendance']}%")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ---- HABIT STATUS ----
+            st.markdown("### 🔧 Habit Status", unsafe_allow_html=True)
+
+            st.markdown("<div class='improve-card'><h4>📚 Study Consistency</h4></div>", unsafe_allow_html=True)
+            st.progress(min(1.0, student["study"]/6))
+
+            st.markdown("<div class='improve-card'><h4>😴 Sleep Routine</h4></div>", unsafe_allow_html=True)
+            st.progress(min(1.0, student["sleep"]/7))
+
+            st.markdown("<div class='improve-card'><h4>📱 Screen Time Discipline</h4></div>", unsafe_allow_html=True)
+            st.progress(max(0.0, 1-student["screen"]/8))
+
+            # ---- CHECKLIST ----
+            st.markdown("""
+            <br>
+            <h2 style='color:#7dd3fc;font-weight:900;'>🗓 Weekly Checklist</h2>
+            ✔️ 2 focused study sessions/day  
+            ✔️ Fixed sleep schedule  
+            ✔️ Screen time ↓ weekly  
+            ✔️ Revise weak subjects Sat/Sun  
+            ✔️ 1 mock test / week
+            """, unsafe_allow_html=True)
+
+
+
+    # ======================================================
+    # 🤖 CHATBOT SECTION
+    # ======================================================
+    if st.session_state["support_tab"] == "chat":
+
+        st.markdown("""
+        <br>
+        <h2 style='color:#7dd3fc;font-weight:900;text-align:center;'>
+            🤖 Smart Project Chatbot
+        </h2>
+        <p style='text-align:center;color:#cbd5f5;margin-top:-10px;'>
+            Click a sample question or type your own
+        </p>
+        """, unsafe_allow_html=True)
+
+        # ---- ANSWERS ----
+        answers = {
+            "how score calculated ?"              : "Score = +study +sleep +attendance +marks −screen.",
+            "why screen time reduces score ?"     : "More screen = low focus → poorer performance.",
+            "minimum habits for low risk ?"       : "Study ≥4h, sleep ≥7h, attendance ≥80%.",
+            "difference predicted and actual risk ?" : "Actual uses formula. Predicted uses ML.",
+            "how clusters are formed ?"           : "K-Means based on habits dataset.",
+            "why clustering is used ?"            : "Groups similar students for comparison.",
+            "best habit to improve first ?"       : "Sleep routine improves learning power.",
+            "how trend shows improvement ?"       : "Score graph trending ↑ means progress.",
+            "why attendance matters ?"            : "Shows discipline + exposure → better marks.",
+            "how to boost score fast ?"           : "Cut screen, +1hr focused study, sleep 7hrs."
+        }
+
+        # ---- chat memory ----
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
+
+        # ---- sample questions ----
+        st.markdown("### 📌 Sample Questions", unsafe_allow_html=True)
+
+        sample_questions = list(answers.keys())
+        left_side  = sample_questions[:5]
+        right_side = sample_questions[5:]
+
+        colL, colR = st.columns(2)
+
+        with colL:
+            for q in left_side:
+                if st.button(q, key=f"btn_{q}", use_container_width=True):
+                    st.session_state.chat_history.append(("user", q))
+                    st.session_state.chat_history.append(("bot", answers[q]))
+
+        with colR:
+            for q in right_side:
+                if st.button(q, key=f"btn_{q}", use_container_width=True):
+                    st.session_state.chat_history.append(("user", q))
+                    st.session_state.chat_history.append(("bot", answers[q]))
+
+        # ---- display ----
+        st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
+        for role, msg in st.session_state.chat_history:
+            bubble = "chat-user" if role == "user" else "chat-bot"
+            st.markdown(f"<div class='{bubble}'>{msg}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ---- clear ----
+        if st.button("🧹 Clear Chat"):
+            st.session_state.chat_history = []
+            st.rerun()
+
+# ================= STUDENT RECORDS + ANALYSIS =================
+if page != "🔐 Login" and not st.session_state.authenticated:
+    st.warning("Please login to access the dashboard ❗")
+    st.stop()
+
+elif page == "📂 Student Records":
+    df = fetch_students()
+    if df.empty:
+        st.warning("No student records found.")
+    else:
+        st.markdown("<div class='card'><h3>Stored Student Records</h3></div>", unsafe_allow_html=True)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # ================= FULL DATASET ANALYSIS =================
+        features = ["study","sleep","screen","attendance","marks"]
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(df[features])
+
+        # ----- CLUSTER -----
+        kmeans = KMeans(n_clusters=3, random_state=42)
+        df["Cluster"] = kmeans.fit_predict(X_scaled)
+        df["Cluster_Label"] = df["Cluster"].map({
+            0:"High Performers",1:"Medium Performers",2:"Low Performers"
+        })
+
+        # ----- CHART 1: 3D CLUSTER -----
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 🎯 Cluster Score Map (3D) — Color = Score")
+        fig = px.scatter_3d(df, x="study", y="sleep", z="marks",
+                            color="score",
+                            color_continuous_scale="Turbo",
+                            hover_data=["name","risk","score"])
+        fig.update_layout(coloraxis_colorbar_title="Score")
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ----- PREDICTION -----
+        lr = LogisticRegression()
+        try:
+            y = LabelEncoder().fit_transform(df["risk"])
+            lr.fit(df[features], y)
+            df["Predicted_Risk"] = lr.predict(df[features])
+            df["Predicted_Risk"] = df["Predicted_Risk"].map({
+                0:"High Risk",1:"Low Risk",2:"Medium Risk"
+            })
+        except:
+            df["Predicted_Risk"] = "Not enough data"
+
+        # ----- CHART 2: BAR -----
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 📊 Predicted Risk — Bar Chart")
+        pred = df["Predicted_Risk"].value_counts().reset_index()
+        pred.columns = ["Risk","Count"]
+        fig = px.bar(pred, x="Risk", y="Count", text="Count",
+                     color="Risk")
+        fig.update_traces(textposition='outside')
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ----- CHART 3: PIE -----
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 🥧 Predicted Risk — Pie Chart")
+        fig = px.pie(pred, names="Risk", values="Count", hole=0.3)
+        fig.update_traces(textinfo="label+percent")
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ----- CHART 4: SCORE TREND -----
+        st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
+        st.markdown("### 📈 Score Trend Over Time (All Students)")
+        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+        trend = df.sort_values("created_at")
+        fig = px.line(trend, x="created_at", y="score",
+                      markers=True, text="name")
+        fig.update_traces(textposition="top center")
+        fig.update_layout(yaxis_range=[0,100])
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+           
+        # ---------- DOWNLOAD REPORTS ----------
+        st.markdown("## 📥 Download Reports")
+
+        col1, col2, col3 = st.columns(3)
+
+        # CSV
+        with col1:
+            st.download_button(
+                "📄 CSV", df.to_csv(index=False),
+                "student_report.csv", "text/csv", key="csv_btn", use_container_width=True
+            )
+
+        # Excel
+        excel_buffer = BytesIO()
+        df.to_excel(excel_buffer, index=False)
+        with col2:
+            st.download_button(
+                "📊 Excel", excel_buffer.getvalue(),
+                "student_report.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="excel_btn", use_container_width=True
+            )
+
+        # Word
+        word_buffer = BytesIO()
+        doc = Document()
+        doc.add_heading("Student Study Habit Report", 1)
+        for _, row in df.iterrows():
+            for col, val in row.items():
+                doc.add_paragraph(f"{col}: {val}")
+            doc.add_paragraph("-"*40)
+        doc.save(word_buffer)
+
+        with col3:
+            st.download_button(
+                "📝 Word", word_buffer.getvalue(),
+                "student_report.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="word_btn", use_container_width=True
+            )
+
+        # ---- styles ----
+        st.markdown("""
+        <style>
+        button[kind="primary"] {
+            background: linear-gradient(90deg,#38bdf8,#0ea5e9);
+            color:white;border-radius:10px;font-weight:700;padding:12px;
+        }
+        button[role="button"]:hover {
+            background: linear-gradient(90deg,#0ea5e9,#0369a1);color:white;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+elif page == "🗺 Roadmap":
+
+    st.markdown("""
+    <style>
+        .timeline-item {
+            background: rgba(255,255,255,0.07);
+            padding: 22px;
+            border-radius: 15px;
+            border-left: 10px solid;
+            box-shadow: 0 4px 15px rgba(56,189,248,0.25);
+            margin-bottom: 35px;
+        }
+        .phase-title {
+            font-size: 26px;
+            font-weight: 900;
+            color: #e0f2fe;
+            margin-bottom: 6px;
+        }
+        .status {
+            font-size: 16px;
+            font-weight: 700;
+            padding: 4px 12px;
+            border-radius: 10px;
+            display: inline-block;
+            margin-bottom: 10px;
+        }
+        .completed { color:#22c55e;background:rgba(34,197,94,0.15); }
+        .progress  { color:#0ea5e9;background:rgba(14,165,233,0.15); }
+        .nextgoal  { color:#facc15;background:rgba(250,204,21,0.15); }
+
+        .footer-box {
+            background: rgba(255,255,255,0.04);
+            padding: 14px;
+            text-align:center;
+            border-radius:12px;
+            font-size:14px;
+            color:#94a3b8;
+            margin-top:45px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ------------------- TITLE -------------------
+    st.markdown("""
+    <h1 style="text-align:center;font-weight:900;color:#7dd3fc;
+               text-shadow:0px 0px 12px rgba(125,211,252,0.7);">
+        🗺 Development Roadmap & Project Summary
+    </h1>
+    """, unsafe_allow_html=True)
+
+    # ------------------- SYSTEM DIAGRAM -------------------
+    st.markdown("<br><h3 style='color:#7dd3fc;font-weight:900;'>🔎 System Flow Overview</h3>",
+                unsafe_allow_html=True)
+
+    diagram = """
+    digraph roadmap {
+        rankdir=LR;
+        node [shape=box style=filled color="#0ea5e9" fontcolor="white"];
+        Input -> "Score Calculation" -> "Risk Level" -> "Clustering & Prediction" -> "Analysis Dashboard" -> "Improvement & Chatbot" -> Reports;
+    }
+    """
+    st.graphviz_chart(diagram)
+
+    # ------------------- TIMELINE -------------------
+    st.markdown("""
+    <h3 style="color:#7dd3fc;font-weight:900;margin-top:35px;">
+        📌 Current Development Status
+    </h3>
+
+    <!-- ===== Phase 1 ===== -->
+    <div class="timeline-item" style="border-color:#22c55e;">
+        <div class="phase-title">Phase 1 — Core System</div>
+        <span class="status completed">Completed</span>
+        <p>Database • Score Formula • Risk Tagging • Inputs • Reports • UI</p>
+    </div>
+
+    <!-- ===== Phase 2 ===== -->
+    <div class="timeline-item" style="border-color:#0ea5e9;">
+        <div class="phase-title">Phase 2 — Analytical Intelligence</div>
+        <span class="status progress">In Progress</span>
+        <p>Latest Student View • Trend Charts • ML Prediction • Cluster Insights • Improvement Page</p>
+    </div>
+
+    <!-- ===== Phase 3 ===== -->
+    <div class="timeline-item" style="border-color:#facc15;">
+        <div class="phase-title">Phase 3 — Personalized Support</div>
+        <span class="status nextgoal">Next</span>
+        <p>Weekly Suggestions • Habit Alerts • Personalized Improvement Targets</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ------------------- NEXT GOAL -------------------
+    st.markdown("""
+    <div style="background:rgba(250,204,21,0.15);
+         padding:18px;border-radius:14px;
+         border-left:8px solid #facc15;">
+         <h3 style="color:#facc15;font-weight:900;">🔧 Immediate Next Step</h3>
+         <p style="color:#e2e8f0;font-size:16px;">
+            Add personalized improvement suggestions driven by past student performance patterns.
+         </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+     # ------------------- ACHIEVEMENTS -------------------
+    st.markdown("""
+    <div style="background:rgba(56,189,248,0.15);padding:22px;
+         border-radius:16px;margin-top:25px;
+         border:1px solid rgba(255,255,255,0.12);">
+        <h3 style="color:#7dd3fc;font-weight:900;">🎯 Key Achievements</h3>
+        <ul style="color:#e2e8f0;font-size:16px;line-height:1.6;">
+            <li>Converted daily habits into meaningful academic score & risk</li>
+            <li>Stored student records using SQLite with automatic timestamping</li>
+            <li>Generated analysis visuals — bar, pie, radar, score trend</li>
+            <li>Clustered students using K-Means for performance grouping</li>
+            <li>Built ML prediction logic for estimating risk ahead of time</li>
+            <li>Created improvement guidance + chatbot support page</li>
+            <li>Enabled export in CSV / Excel / Word formats</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ------------------- CREDITS -------------------
+    st.markdown("""
+    <br><br>
+    <h3 style="color:#7dd3fc;font-weight:900;">🤝 Credits</h3>
+    <p style="color:#cbd5f5;font-size:16px;">
+        <b>Developed by:</b> Swetha Periyasamy<br>
+        <b>Mentor:</b> Annilkumar — Infosys Springboard
+    </p>
+    """, unsafe_allow_html=True)
+
+    # ------------------- FOOTER -------------------
+    st.markdown("""
+        <div class="footer-box">
+            ✨ Student Study Habit Recommendations — Final Project Showcase (v1.0)
+        </div>
+    """, unsafe_allow_html=True)
