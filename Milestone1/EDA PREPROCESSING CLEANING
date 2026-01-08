@@ -1,1 +1,124 @@
+# ------------------------------------------------------------
+# study_habit_eda_final.py
+# Complete EDA pipeline using Pandas, NumPy, Matplotlib & Seaborn
+# Modularized for clarity and learning
+# ------------------------------------------------------------
 
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# ------------------------------------------------------------
+# 1️⃣ Load Data Function
+# ------------------------------------------------------------
+def load_data(file_path):
+    df = pd.read_excel("cleaned_data_VISUAL.xlsx")
+    print("✅ Data Loaded Successfully!\n")
+    print("First 5 Rows:\n", df.head(), "\n")
+    print("Data Info:\n")
+    print(df.info())
+    return df
+
+# ------------------------------------------------------------
+# 2️⃣ Clean Data Function
+# ------------------------------------------------------------
+def clean_data(df):
+    print("\n🔹 Checking Missing Values:\n", df.isnull().sum())
+
+    # Fill missing numeric values with mean
+    df.fillna(df.mean(numeric_only=True), inplace=True)
+
+    # Drop duplicates
+    df.drop_duplicates(inplace=True)
+
+    # Rename columns for easier access
+    df.rename(columns={
+        'Study Hours/Day': 'StudyHours',
+        'Sleep Hours': 'SleepHours',
+        'Social Media Hours': 'SocialMedia',
+        'Exercise Hours': 'Exercise',
+        'Attention Level (1-10)': 'AttentionLevel'
+    }, inplace=True)
+
+    print("\n✅ Data Cleaning Done! Preview:\n", df.head())
+    return df
+
+# ------------------------------------------------------------
+# 3️⃣ NumPy Analysis Function
+# ------------------------------------------------------------
+def numpy_analysis(df):
+    study = np.array(df['StudyHours'])
+    attention = np.array(df['AttentionLevel'])
+
+    mean_study = np.mean(study)
+    median_study = np.median(study)
+    std_attention = np.std(attention)
+    cov = np.cov(study, attention)[0, 1]
+
+    print("\n📊 NumPy Analysis Results:")
+    print(f"Mean Study Hours: {mean_study:.2f}")
+    print(f"Median Study Hours: {median_study:.2f}")
+    print(f"Std. Dev of Attention Level: {std_attention:.2f}")
+    print(f"Covariance (Study vs Attention): {cov:.2f}")
+
+# ------------------------------------------------------------
+# 4️⃣ Pandas EDA Function
+# ------------------------------------------------------------
+def pandas_eda(df):
+    print("\n🔍 Correlation Matrix:\n", df.corr(numeric_only=True), "\n")
+
+    high_attention = df[df['AttentionLevel'] >= 7]
+    low_attention = df[df['AttentionLevel'] < 7]
+
+    print("Students with High Attention:\n", high_attention[['Student Name', 'AttentionLevel']])
+    print("\nStudents with Low Attention:\n", low_attention[['Student Name', 'AttentionLevel']])
+
+# ------------------------------------------------------------
+# 5️⃣ Visualization Function (Matplotlib + Seaborn)
+# ------------------------------------------------------------
+def visualize_data(df):
+    print("\n🎨 Generating Visualizations...")
+
+    # Histogram of Study Hours
+    plt.figure(figsize=(7, 5))
+    plt.hist(df['StudyHours'], bins=5, color='skyblue', edgecolor='black')
+    plt.title("Distribution of Study Hours")
+    plt.xlabel("Study Hours per Day")
+    plt.ylabel("Number of Students")
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
+    # Seaborn Pairplot
+    sns.pairplot(df[['StudyHours', 'SleepHours', 'SocialMedia', 'Exercise', 'AttentionLevel']],
+                 diag_kind='kde')
+    plt.suptitle("Pairwise Relationships", y=1.02)
+    plt.show()
+
+    # Correlation Heatmap
+    plt.figure(figsize=(6, 4))
+    sns.heatmap(df.corr(numeric_only=True), annot=True, cmap='coolwarm', fmt=".2f")
+    plt.title("Correlation Heatmap")
+    plt.tight_layout()
+    plt.show()
+
+# ------------------------------------------------------------
+# 6️⃣ Main Function to Execute All Steps
+# ------------------------------------------------------------
+def main():
+    file_path = r"C:\Users\thana\PycharmProjects\Study Track AI based Student Study Habit Recommende\M1\required cleaned pattern.xlsx"
+    
+    df = load_data(file_path)
+    df = clean_data(df)
+    numpy_analysis(df)
+    pandas_eda(df)
+    visualize_data(df)
+
+    print("\n✅ EDA Process Completed Successfully!")
+
+# ------------------------------------------------------------
+# Run Script
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    main()
