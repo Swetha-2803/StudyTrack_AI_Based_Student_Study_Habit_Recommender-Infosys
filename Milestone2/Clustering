@@ -1,0 +1,78 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+
+file_path = "student_study_data.xlsx"
+df = pd.read_excel("rawdata_25.xlsx")
+
+print("\n🔹 First 5 rows:")
+print(df.head())
+
+print("\n🔹 Data Info:")
+print(df.info())
+
+print("\n🔹 Missing Values:")
+print(df.isnull().sum())
+
+print("\n🔹 Statistical Summary:")
+print(df.describe())
+
+plt.figure(figsize=(10,6))
+sns.histplot(df['Study Hours/Day'], bins=5, kde=True)
+plt.title("Distribution of Study Hours per Day")
+plt.xlabel("Hours")
+plt.ylabel("Count")
+plt.show()
+
+sns.pairplot(df[['Study Hours/Day','Sleep Hours','Social Media Hours',
+                 'Exercise Hours','Attention Level']])
+plt.show()
+
+df.fillna(df.mean(numeric_only=True), inplace=True)
+
+df_clean = df.drop(columns=['Student Name', 'Notes'], errors='ignore')
+
+scaler = StandardScaler()
+scaled_data = scaler.fit_transform(df_clean)
+
+kmeans = KMeans(n_clusters=3, random_state=42)
+df['Cluster'] = kmeans.fit_predict(scaled_data)
+
+print("\n🔹 Cluster labels:")
+if 'Student Name' in df.columns:
+    print(df[['Student Name', 'Cluster']])
+else:
+    print(df[['Cluster']])
+
+plt.figure(figsize=(8,6))
+sns.scatterplot(
+    x=df['Study Hours/Day'],
+    y=df['Attention Level'],
+    hue=df['Cluster'],
+    palette="viridis",
+    s=120
+)
+plt.title("Student Clusters Based on Study Habits")
+plt.xlabel("Study Hours / Day")
+plt.ylabel("Attention Level")
+plt.show()
+
+def study_recommendation(cluster):
+    if cluster == 0:
+        return "Balanced routine. Try adding 1 more hour of focused study."
+    elif cluster == 1:
+        return "Highly focused. Maintain consistency with short breaks."
+    else:
+        return "Low focus. Reduce distractions and increase study time gradually."
+
+df['Recommendation'] = df['Cluster'].apply(study_recommendation)
+
+
+df.to_excel("student_study_recommendations.xlsx", index=False)
+print("\n✅ Output saved as: student_study_recommendations.xlsx")
+
+print("\n🔹 Final Output Table:")
+print(df)
