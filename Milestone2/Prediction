@@ -1,1 +1,77 @@
+# study_habit_prediction.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
+file_path = file_path = "student_study_data_cleaned1.xlsx"
+df = pd.read_excel(file_path)
+
+df = df[['StudyHours', 'SleepHours', 'SocialMedia', 'Exercise', 'AttentionLevel']]
+
+print("✅ Data Loaded Successfully\n")
+print(df.head())
+
+print("\n🔍 Missing Values:\n", df.isnull().sum())
+
+df.fillna(df.mean(numeric_only=True), inplace=True)
+
+X = df[['StudyHours', 'SleepHours', 'SocialMedia', 'Exercise']]
+y = df['AttentionLevel']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+print("\n📊 Train-Test Split Completed:")
+print("Training Samples:", X_train.shape[0])
+print("Testing Samples:", X_test.shape[0])
+
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+model = LinearRegression()
+model.fit(X_train_scaled, y_train)
+
+print("\n✅ Model Training Successful")
+
+y_pred = model.predict(X_test_scaled)
+
+r2 = r2_score(y_test, y_pred)
+mae = mean_absolute_error(y_test, y_pred)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+
+print("\n📈 Model Performance:")
+print(f"R² Score: {r2:.2f}")
+print(f"Mean Absolute Error: {mae:.2f}")
+print(f"Root Mean Squared Error: {rmse:.2f}")
+
+plt.figure(figsize=(7,5))
+plt.scatter(y_test, y_pred, edgecolor='black')
+plt.title('Actual vs Predicted Attention Level')
+plt.xlabel('Actual Attention Level')
+plt.ylabel('Predicted Attention Level')
+
+min_val = min(min(y_test), min(y_pred))
+max_val = max(max(y_test), max(y_pred))
+plt.plot([min_val, max_val], [min_val, max_val], color='red', linewidth=2)
+
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.tight_layout()
+plt.show()
+
+new_student = pd.DataFrame({
+    'StudyHours': [5],
+    'SleepHours': [7],
+    'SocialMedia': [3],
+    'Exercise': [1]
+})
+
+new_student_scaled = scaler.transform(new_student)
+predicted_attention = model.predict(new_student_scaled)[0]
+
+print(f"\n🎯 Predicted Attention Level for New Student: {predicted_attention:.2f}")
